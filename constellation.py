@@ -1,18 +1,3 @@
-"""Synthetic LEO contact plans for the TEG-view experiments.
-
-Model (deliberately simple and fully reproducible, no external data):
-  * Walker-star constellation, circular orbits, P planes x S satellites.
-  * Ground stations (GS) on a rotating spherical Earth.
-  * Time is slotted (DT seconds). A link is present in slot k if its
-    geometric condition holds at BOTH the start and the end of the slot.
-  * Contacts are directed; every physical link yields two contacts.
-
-Regimes
-  isl_full  : intra-plane ISLs + inter-plane ISLs (off above |lat| > LAT_OFF,
-              no seam link between the counter-rotating planes P-1 and 0)
-  isl_intra : intra-plane ISLs only (planes only meet through ground stations)
-  no_isl    : bent-pipe / store-and-forward, satellite-GS contacts only
-"""
 from __future__ import annotations
 import numpy as np
 from dataclasses import dataclass, field
@@ -85,7 +70,6 @@ def gs_eci(t, stations=GROUND_STATIONS):
 
 
 def _links_at(c, t, regime):
-    """Undirected link sets (as index pairs) present at time t."""
     rs = sat_eci(c, t)
     rg = gs_eci(t)
     P, S = c["P"], c["S"]
