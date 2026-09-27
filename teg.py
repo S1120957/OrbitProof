@@ -1,13 +1,3 @@
-"""Time-expanded-graph (TEG) evaluation, lifted witnesses and certificates.
-
-A journey is a list of contacts (u, v, k) with u_0 = s, consecutive endpoints
-matching, u_m = d and k0 <= k_1 <= ... <= k_m (store-and-forward between
-slots, multi-hop within a slot).
-
-Everything here is engine-independent Python. sqlview.py evaluates the same
-queries through a materialised relational view in DuckDB and is used to
-cross-check the answers.
-"""
 from __future__ import annotations
 import numpy as np
 from collections import defaultdict, deque
@@ -24,12 +14,6 @@ class PlanError(ValueError):
 
 
 class Index:
-    """Per-slot adjacency + hash set of contacts for O(1) membership.
-
-    The base contact plan is validated (integer node ids in range, u != v, slots in
-    [0, T)) and sorted by slot before any index is built, so the checker never depends
-    on the row order of the stored facts. `digest` identifies the plan snapshot (as a
-    set of facts) that certificates refer to."""
 
     def __init__(self, cp):
         import hashlib, dataclasses
@@ -82,20 +66,7 @@ def _valid_labeling(ix, f):
 def _valid_avoid(ix, avoid):
     return all(_valid_node(ix, a) for a in avoid)
 
-
-# ----------------------------------------------------------------------------
-# Query evaluation on the TEG (sweep over slots; BFS inside each slot)
-# ----------------------------------------------------------------------------
 def earliest_arrival(ix, s, k0, k1, avoid=frozenset(), tau=0, stop_at=None):
-    """Returns (f, parent, visited_states).
-    f[n]      : earliest slot from which n holds the bundle (INF if not by k1)
-    parent[n] : contact (u, n, k) through which n was first reached
-    Reachability of (n, k) from (s, k0) in the TEG view with hold edges
-    (n,k)->(n,k+1) and transmission edges (u,k)->(v,k+tau), tau in {0,1}:
-      tau = 0 : zero-duration slotted abstraction (multi-hop within a slot)
-      tau = 1 : every transmission occupies one slot (one hop per slot)
-    stop_at=d stops as soon as f[d] is final (earliest-arrival early exit);
-    the labeling is then closed on the contacts with k + tau <= f[d]."""
     N = ix.N
     f = [INF] * N
     parent = [None] * N
@@ -142,7 +113,6 @@ def arrival(J, k0, tau=0):
 
 
 def earliest_arrival_hops(ix, s, k0, k1, H, avoid=frozenset()):
-    """Hop-bounded variant: states (n, h), h = #transmissions so far (arity-3 view)."""
     N = ix.N
     f = [[INF] * (H + 1) for _ in range(N)]
     parent = {}
@@ -191,7 +161,6 @@ def journey_from_parent_hops(parent, f, s, d, H):
 
 
 def loop_eliminate(J, s):
-    """Lemma 2: remove cycles (wait instead of looping); O(m)."""
     out = []
     pos = {s: 0}
     for c in J:
@@ -213,13 +182,7 @@ def is_node_simple(J, s):
     return len(nodes) == len(set(nodes))
 
 
-# ----------------------------------------------------------------------------
-# Independent verifiers (the "trusted checker")
-# ----------------------------------------------------------------------------
 def verify_journey(ix, J, s, d, k0, k1, avoid=frozenset(), via=None, H=None, tau=0):
-    """O(m): witness is a real, time-respecting journey satisfying the query.
-    All inputs are validated; an empty journey (s == d) must still satisfy the
-    deadline, avoidance, via and hop constraints."""
     if not (_valid_node(ix, s) and _valid_node(ix, d) and _valid_window(ix, k0, k1)
             and tau in (0, 1) and _valid_avoid(ix, avoid)):
         return False
@@ -258,9 +221,6 @@ def verify_journey(ix, J, s, d, k0, k1, avoid=frozenset(), via=None, H=None, tau
 
 
 def verify_labeling(ix, f, s, k0, k1, avoid=frozenset(), tau=0):
-    """Proposition 3: (C1) f[s] <= k0 and (C2) f[u] <= k  =>  f[v] <= k + tau for every
-    contact (u, v, k) with k0 <= k and k + tau <= k1. If True, every journey that reaches
-    n at slot k <= k1 has k >= f[n]. Cost: one scan of the contacts in the window."""
     if not (_valid_node(ix, s) and _valid_window(ix, k0, k1) and tau in (0, 1)
             and _valid_avoid(ix, avoid) and _valid_labeling(ix, f)):
         return False
@@ -280,11 +240,6 @@ def verify_labeling(ix, f, s, k0, k1, avoid=frozenset(), tau=0):
 
 
 def check_answer(ix, task, s, d, k0, k1, claim, J, f, avoid=frozenset(), tau=0):
-    """Answer-level checker used by the agent.
-    EXISTS  yes  : J is a valid journey arriving by k1
-    EXISTS  no   : f closed on [k0, k1] and f[d] > k1
-    EARLIEST k*  : J valid with arrival == k*, and f closed on [k0, k*-1] with f[d] >= k*
-    EARLIEST none: f closed on [k0, k1] and f[d] > k1"""
     if task not in ("EXISTS", "EARLIEST"):
         return False
     if task == "EXISTS" and not isinstance(claim, (bool, np.bool_)):
@@ -304,9 +259,6 @@ def check_answer(ix, task, s, d, k0, k1, claim, J, f, avoid=frozenset(), tau=0):
 
 
 def check_via_answer(ix, task, s, d, g, k0, k1, claim, J, f1, f2, avoid=frozenset(), tau=0):
-    """Answer-level checker for VIA(g). f1: labeling from (s, k0); f2: labeling from (g, f1[g]).
-    A labeling only certifies a LOWER bound; an earliest answer also needs a journey that
-    ATTAINS the claimed value (arrival(J) == claim) and passes g."""
     if task not in ("EXISTS", "EARLIEST"):
         return False
     if task == "EXISTS" and not isinstance(claim, (bool, np.bool_)):
@@ -332,7 +284,6 @@ def check_via_answer(ix, task, s, d, g, k0, k1, claim, J, f1, f2, avoid=frozense
 
 
 def check_hops_answer(ix, task, s, d, k0, k1, H, claim, J, f, avoid=frozenset()):
-    """Answer-level checker for HOPS(H) (tau = 0); f is the hop-layered labeling f[n][h]."""
     if task not in ("EXISTS", "EARLIEST"):
         return False
     if task == "EXISTS" and not isinstance(claim, (bool, np.bool_)):
@@ -353,7 +304,6 @@ def check_hops_answer(ix, task, s, d, k0, k1, H, claim, J, f, avoid=frozenset())
 
 
 def verify_labeling_hops(ix, f, s, k0, k1, H, avoid=frozenset()):
-    """Hop-layered analogue of verify_labeling on states (n, h), h <= H."""
     if not (_valid_node(ix, s) and _valid_window(ix, k0, k1) and _is_int(H) and H >= 1
             and _valid_avoid(ix, avoid) and isinstance(f, (list, tuple)) and len(f) == ix.N
             and all(isinstance(r, (list, tuple)) and len(r) == H + 1
@@ -375,13 +325,7 @@ def verify_labeling_hops(ix, f, s, k0, k1, H, avoid=frozenset()):
     return True
 
 
-# ----------------------------------------------------------------------------
-# Replay on the lifted witness (sub-instance) and minimality checks
-# ----------------------------------------------------------------------------
 def replay_earliest(ix, J, s, d, k0, drop=None, tau=0):
-    """Earliest arrival at d when the query is replayed on B + W_C(J), where the
-    background B (Node, Slot, Succ) is fixed and W_C(J) are the witness contacts.
-    drop: one contact of J to remove (minimality check)."""
     contacts = [c for c in J if c != drop]
     adj = defaultdict(lambda: defaultdict(list))
     for a, b, k in contacts:
@@ -411,13 +355,11 @@ def replay_earliest(ix, J, s, d, k0, drop=None, tau=0):
 
 
 def witness_is_minimal(ix, J, s, d, k0, tau=0):
-    """Proposition 2: removing any witness contact makes 'arrival <= arr(J)' false."""
     arr = arrival(J, k0, tau)
     return all(replay_earliest(ix, J, s, d, k0, drop=c, tau=tau) > arr for c in J)
 
 
 def coarse_witness_size(ix, J, s, k0):
-    """Coarse subgraph: every contact in [k0, arr] incident to a node on the journey."""
     nodes = {s} | {c[1] for c in J}
     arr = J[-1][2]
     cp = ix.cp
@@ -427,11 +369,7 @@ def coarse_witness_size(ix, J, s, k0):
     return int(mask.sum())
 
 
-# ----------------------------------------------------------------------------
-# Time-agnostic semantics that a naive text-to-query translation may produce
-# ----------------------------------------------------------------------------
 def static_reach(ix, s, d, k0, k1):
-    """Path in the union of all contacts in [k0,k1], ignoring their order."""
     cp = ix.cp
     lo, hi = ix.slot_start[k0], ix.slot_start[min(k1, cp.T - 1) + 1]
     adj = defaultdict(set)
@@ -447,7 +385,6 @@ def static_reach(ix, s, d, k0, k1):
 
 
 def snapshot_reach(ix, s, d, k0):
-    """Path in the single snapshot at k0 (no store-and-forward)."""
     adj = ix.adj[k0]
     seen, stack = {s}, [s]
     while stack:
