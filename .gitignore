@@ -1,0 +1,5 @@
+# generated outputs are never committed (figures, tables, results, logs)
+out/
+logs/
+*.jsonl
+__pycache__/
