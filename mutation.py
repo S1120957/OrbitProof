@@ -168,3 +168,4 @@ if __name__ == "__main__":
             print(reg, "tau", tau, "valid accepted", r["valid_ok"], "/", r["valid_n"],
                   "| mutants rejected", sum(r["rejected"].values()), "/", sum(r["tried"].values()),
                   "| forged lower bounds accepted by component predicates alone:", r["component_accepts"])
+            assert r["valid_ok"] == r["valid_n"] and sum(r["rejected"].values()) == sum(r["tried"].values())

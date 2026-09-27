@@ -1,4 +1,4 @@
-"""LLM study harness.
+"""LLM study harness (Sec. VI-D of the paper). NOT yet run with real LLMs.
 
 Systems
   sql       : LLM writes one SQL query over the base tables (node, slot, contact)
@@ -25,6 +25,7 @@ from __future__ import annotations
 import argparse, json, os, threading, time, collections, hashlib, random
 from concurrent.futures import ThreadPoolExecutor, as_completed
 import requests
+import duckdb
 
 from constellation import make_contact_plan
 from teg import Index
@@ -154,7 +155,13 @@ def run_sql(con, sql):
     out = {}
     def work():
         try:
-            out["v"] = con.execute(sql).fetchone()[0]
+            stmts = con.extract_statements(sql)
+            if len(stmts) != 1 or stmts[0].type != duckdb.StatementType.SELECT:
+                raise ValueError("exactly one SELECT statement is allowed")
+            rows = con.execute(sql).fetchall()
+            if len(rows) != 1 or len(rows[0]) != 1:
+                raise ValueError(f"expected 1 row x 1 column, got {len(rows)} row(s)")
+            out["v"] = rows[0][0]
         except Exception as e:
             out["e"] = str(e)[:200]
     th = threading.Thread(target=work, daemon=True)
@@ -166,9 +173,17 @@ def run_sql(con, sql):
 
 
 def norm_answer(task, v):
+    """Exact answer types: EXISTS -> a SQL BOOLEAN; EARLIEST -> an INTEGER slot or NULL.
+    Anything else (strings, floats, booleans for EARLIEST, NULL for EXISTS) is a type error."""
     if task == "EXISTS":
-        return None if v is None else bool(v)
-    return None if v is None else int(v)
+        if isinstance(v, bool):
+            return v
+        raise TypeError(f"EXISTS answer must be BOOLEAN, got {type(v).__name__}")
+    if v is None:
+        return None
+    if isinstance(v, int) and not isinstance(v, bool):
+        return v
+    raise TypeError(f"EARLIEST answer must be INTEGER or NULL, got {type(v).__name__}")
 
 
 def stratified(items, limit):
@@ -196,6 +211,13 @@ def load_env(reg, envs):
         sv.con.executemany("INSERT INTO node_names VALUES (?,?,?)",
                            [(i, DISPLAY.get(n, n), k) for i, (n, k) in enumerate(zip(cp.names, cp.kinds))])
         sv.con.execute("CREATE OR REPLACE TABLE node AS SELECT * FROM node_names")
+        # model-generated SQL runs on a read-only copy, so no trial can change later trials' data
+        import tempfile
+        path = os.path.join(tempfile.mkdtemp(prefix="orbitproof_"), f"{reg}.duckdb")
+        sv.con.execute(f"ATTACH '{path}' AS ro_copy")
+        sv.con.execute("COPY FROM DATABASE memory TO ro_copy")
+        sv.con.execute("DETACH ro_copy")
+        sv.ro = duckdb.connect(path, read_only=True)
         envs[reg] = (cp, Index(cp), sv)
     return envs[reg]
 
@@ -215,7 +237,7 @@ def score(it, raw, system, env):
         except (IRError, KeyError, ValueError, TypeError) as e:
             pred, rec["error"] = "ERR", f"ir: {e}"[:200]
     else:
-        v, err = run_sql(sv.con, raw)
+        v, err = run_sql(sv.ro, raw)
         if err:
             pred, rec["error"] = "ERR", err
         else:
@@ -254,11 +276,14 @@ def main():
 
     # ---- phase 1: generation (parallel, cached, resumable)
     raw_path = (a.out + ".raw.jsonl") if a.out else None
+    bench_sha = hashlib.sha256("".join(json.dumps(it, sort_keys=True) for it in items).encode()).hexdigest()[:12]
+    run_key = hashlib.sha256(json.dumps([PROMPT_SHA, bench_sha, a.system, a.provider, a.model, a.base_url,
+                                         a.temperature, 800]).encode()).hexdigest()[:16]
     raw = {}
     if raw_path and os.path.exists(raw_path):
         for l in open(raw_path):
             r = json.loads(l)
-            if r.get("prompt_sha") == PROMPT_SHA and r.get("model") == a.model and r.get("system") == a.system:
+            if r.get("run_key") == run_key:
                 raw[r["id"]] = r
     todo = [it for it in items if it["id"] not in raw]
     lock = threading.Lock()
@@ -271,6 +296,7 @@ def main():
         t = time.perf_counter()
         out = get_output(a.provider, a.system, prompt, it, cp.names, a)
         return dict(id=it["id"], system=a.system, provider=a.provider, model=a.model, prompt_sha=PROMPT_SHA,
+                    run_key=run_key, bench_sha=bench_sha, base_url=a.base_url,
                     temperature=a.temperature, t_llm=time.perf_counter() - t, raw=out,
                     ts=time.strftime("%Y-%m-%dT%H:%M:%SZ", time.gmtime()))
 
@@ -299,14 +325,16 @@ def main():
     per_t = collections.defaultdict(collections.Counter)
     logs = []
     for it in items:
-        if it["id"] not in raw:
-            continue
-        r = raw[it["id"]]
+        r = raw.get(it["id"]) or dict(raw=None, t_llm=None, generation_failed=True)
         rec = dict(id=it["id"], instance=it.get("instance", it["id"]), template=it["template"],
                    regime=it["regime"], system=a.system, provider=r.get("provider", a.provider),
                    model=a.model, label=a.label,
                    prompt_sha=PROMPT_SHA, raw=r["raw"], t_llm=r["t_llm"])
-        rec.update(score(it, r["raw"], a.system, envs[it["regime"]]))
+        if r.get("generation_failed"):
+            rec.update(pred="ERR", gold=it["gold_answer"], released=False, correct=False,
+                       error="generation failed (retries exhausted)")
+        else:
+            rec.update(score(it, r["raw"], a.system, envs[it["regime"]]))
         for c in (stats, per_t[it["template"]]):
             c["n"] += 1; c["correct"] += rec["correct"]; c["released"] += rec["released"]
             c["error"] += (not rec["released"]); c["ir_exact"] += rec.get("ir_exact", False)
@@ -319,7 +347,7 @@ def main():
                 f"acc|released {100*c['correct']/r:5.1f}%  wrong-released {100*c['wrong_released']/n:5.1f}%  "
                 f"rejected/err {100*c['error']/n:5.1f}%  IR-exact {100*c['ir_exact']/n:5.1f}%  (n={c['n']})")
     if a.emit_macro:
-        d = os.path.join(os.environ.get("ORBITPROOF_OUT", os.path.join(os.path.dirname(os.path.abspath(__file__)), "out")), "gen")
+        d = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "paper", "gen")
         os.makedirs(d, exist_ok=True)
         with open(os.path.join(d, f"{a.emit_macro}.tex"), "w") as fh:
             n = max(stats['n'], 1); r = max(stats['released'], 1); M = a.emit_macro

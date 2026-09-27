@@ -1,5 +1,5 @@
 """Headline numbers of Tables III and IV under the 60-s default and under 10-s slots,
-for the slot-width sensitivity. Writes out/alt_slot_width.md and out/gen/alt_macros.tex.
+to support the decision on the default discretisation. Writes alt_slot_width.md.
 Physical windows (15/30/60 min) and query counts are identical across slot widths."""
 from __future__ import annotations
 import random, statistics as st
@@ -71,17 +71,14 @@ def main():
             R = res[dt][reg]
             cells = [f"{R[f'sem{W}'][0]:.1f} / {R[f'sem{W}'][1]:.1f} / {R[f'sem{W}'][2]:.1f}" for W in (15, 30, 60)]
             lines.append(f"| {name[reg]} | {dt} s | " + " | ".join(cells) + " |")
+    open("alt_slot_width.md", "w").write("\n".join(lines) + "\n")
     import os
-    out = os.environ.get("ORBITPROOF_OUT", os.path.join(os.path.dirname(os.path.abspath(__file__)), "out"))
-    os.makedirs(out, exist_ok=True)
-    open(os.path.join(out, "alt_slot_width.md"), "w").write("\n".join(lines) + "\n")
     ten = res[10]
     m = {"AltStaticNoIslMin": min(ten["no_isl"][f"sem{W}"][1] for W in (15, 30, 60)),
          "AltStaticNoIslMax": max(ten["no_isl"][f"sem{W}"][1] for W in (15, 30, 60)),
          "AltSnapIslMin": min(ten[r][f"sem{W}"][2] for r in ("isl_full", "isl_intra") for W in (15, 30, 60)),
          "AltSnapIslMax": max(ten[r][f"sem{W}"][2] for r in ("isl_full", "isl_intra") for W in (15, 30, 60))}
-    gen = os.path.join(out, "gen")
-    os.makedirs(gen, exist_ok=True)
+    gen = os.path.join(os.path.dirname(os.path.abspath(__file__)), "..", "paper", "gen")
     with open(os.path.join(gen, "alt_macros.tex"), "w") as fh:
         for k, v in m.items():
             fh.write(f"\\newcommand{{\\R{k}}}{{{v:.0f}}}\n")

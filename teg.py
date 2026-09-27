@@ -15,18 +15,72 @@ from collections import defaultdict, deque
 INF = 10**9
 
 
+def _is_int(x):
+    return isinstance(x, (int, np.integer)) and not isinstance(x, (bool, np.bool_))
+
+
+class PlanError(ValueError):
+    pass
+
+
 class Index:
-    """Per-slot CSR adjacency + hash set of contacts for O(1) membership."""
+    """Per-slot adjacency + hash set of contacts for O(1) membership.
+
+    The base contact plan is validated (integer node ids in range, u != v, slots in
+    [0, T)) and sorted by slot before any index is built, so the checker never depends
+    on the row order of the stored facts. `digest` identifies the plan snapshot (as a
+    set of facts) that certificates refer to."""
 
     def __init__(self, cp):
+        import hashlib, dataclasses
+        u, v, k = (np.asarray(x) for x in (cp.u, cp.v, cp.k))
+        if not (u.ndim == v.ndim == k.ndim == 1 and len(u) == len(v) == len(k)):
+            raise PlanError("contact arrays must be 1-D and of equal length")
+        if len(k) and not all(np.issubdtype(x.dtype, np.integer) for x in (u, v, k)):
+            raise PlanError("contact arrays must be integer")
+        if len(k) and (u.min() < 0 or v.min() < 0 or u.max() >= cp.N or v.max() >= cp.N
+                       or k.min() < 0 or k.max() >= cp.T or np.any(u == v)):
+            raise PlanError("contact outside the node/slot domain, or a self-contact")
+        order = np.lexsort((u, k))                         # stable sort by slot, then source
+        u, v, k = (x[order].astype(np.int32) for x in (u, v, k))
+        if not np.array_equal(order, np.arange(len(order))):
+            cp = dataclasses.replace(cp, u=u, v=v, k=k)
         self.cp = cp
         self.N, self.T = cp.N, cp.T
+        dt = (getattr(cp, "meta", None) or {}).get("DT", 60)
+        if not float(dt).is_integer() or dt <= 0:
+            raise PlanError("slot length must be a positive whole number of seconds")
+        self.dt = int(dt)
         self.adj = [defaultdict(list) for _ in range(cp.T)]
-        for a, b, k in zip(cp.u.tolist(), cp.v.tolist(), cp.k.tolist()):
-            self.adj[k][a].append(b)
-        self.cset = set(zip(cp.u.tolist(), cp.v.tolist(), cp.k.tolist()))
-        # contacts sorted by slot for window scans
-        self.slot_start = np.searchsorted(cp.k, np.arange(cp.T + 1))
+        for a, b, kk in zip(u.tolist(), v.tolist(), k.tolist()):
+            self.adj[kk][a].append(b)
+        self.cset = set(zip(u.tolist(), v.tolist(), k.tolist()))
+        self.slot_start = np.searchsorted(k, np.arange(cp.T + 1))
+        h = hashlib.sha256()
+        h.update(f"{cp.N}|{cp.T}|{self.dt}|".encode())
+        full = np.lexsort((v, u, k))                       # digest of the plan as a set of facts
+        h.update(np.stack([k[full], u[full], v[full]]).astype(np.int64).tobytes())
+        self.digest = h.hexdigest()
+
+
+def _valid_node(ix, x):
+    return _is_int(x) and 0 <= x < ix.N
+
+
+def _valid_window(ix, k0, k1):
+    return _is_int(k0) and _is_int(k1) and 0 <= k0 <= k1 <= ix.T - 1
+
+
+def _valid_label(ix, x):
+    return _is_int(x) and (0 <= x <= ix.T or x == INF)
+
+
+def _valid_labeling(ix, f):
+    return isinstance(f, (list, tuple)) and len(f) == ix.N and all(_valid_label(ix, x) for x in f)
+
+
+def _valid_avoid(ix, avoid):
+    return all(_valid_node(ix, a) for a in avoid)
 
 
 # ----------------------------------------------------------------------------
@@ -163,10 +217,25 @@ def is_node_simple(J, s):
 # Independent verifiers (the "trusted checker")
 # ----------------------------------------------------------------------------
 def verify_journey(ix, J, s, d, k0, k1, avoid=frozenset(), via=None, H=None, tau=0):
-    """O(m): witness is a real, time-respecting journey satisfying the query."""
-    if s == d and not J:
-        return True
-    if not J or J[0][0] != s or J[-1][1] != d:
+    """O(m): witness is a real, time-respecting journey satisfying the query.
+    All inputs are validated; an empty journey (s == d) must still satisfy the
+    deadline, avoidance, via and hop constraints."""
+    if not (_valid_node(ix, s) and _valid_node(ix, d) and _valid_window(ix, k0, k1)
+            and tau in (0, 1) and _valid_avoid(ix, avoid)):
+        return False
+    if via is not None and not _valid_node(ix, via):
+        return False
+    if H is not None and not (_is_int(H) and H >= 1):
+        return False
+    if s in avoid or d in avoid:
+        return False
+    if not isinstance(J, (list, tuple)) or not all(
+            isinstance(c, (list, tuple)) and len(c) == 3 and all(_is_int(x) for x in c) for c in J):
+        return False
+    J = [tuple(c) for c in J]
+    if not J:
+        return s == d and via in (None, s)
+    if J[0][0] != s or J[-1][1] != d:
         return False
     avail = k0                      # slot from which the bundle is available at the current node
     for i, (a, b, k) in enumerate(J):
@@ -181,7 +250,7 @@ def verify_journey(ix, J, s, d, k0, k1, avoid=frozenset(), via=None, H=None, tau
         avail = k + tau
     if avail > k1:
         return False
-    if via is not None and via not in {c[1] for c in J[:-1]} | {s}:
+    if via is not None and via not in {s} | {c[1] for c in J}:
         return False
     if H is not None and len(J) > H:
         return False
@@ -192,6 +261,9 @@ def verify_labeling(ix, f, s, k0, k1, avoid=frozenset(), tau=0):
     """Proposition 3: (C1) f[s] <= k0 and (C2) f[u] <= k  =>  f[v] <= k + tau for every
     contact (u, v, k) with k0 <= k and k + tau <= k1. If True, every journey that reaches
     n at slot k <= k1 has k >= f[n]. Cost: one scan of the contacts in the window."""
+    if not (_valid_node(ix, s) and _valid_window(ix, k0, k1) and tau in (0, 1)
+            and _valid_avoid(ix, avoid) and _valid_labeling(ix, f)):
+        return False
     if f[s] > k0:
         return False
     cp = ix.cp
@@ -213,22 +285,36 @@ def check_answer(ix, task, s, d, k0, k1, claim, J, f, avoid=frozenset(), tau=0):
     EXISTS  no   : f closed on [k0, k1] and f[d] > k1
     EARLIEST k*  : J valid with arrival == k*, and f closed on [k0, k*-1] with f[d] >= k*
     EARLIEST none: f closed on [k0, k1] and f[d] > k1"""
+    if task not in ("EXISTS", "EARLIEST"):
+        return False
+    if task == "EXISTS" and not isinstance(claim, (bool, np.bool_)):
+        return False
+    if task == "EARLIEST" and claim is not None and not (_is_int(claim) and k0 <= claim <= k1):
+        return False
     if task == "EXISTS":
         if claim:
             return J is not None and verify_journey(ix, J, s, d, k0, k1, avoid, tau=tau)
-        return f is not None and f[d] > k1 and verify_labeling(ix, f, s, k0, k1, avoid, tau)
+        return f is not None and verify_labeling(ix, f, s, k0, k1, avoid, tau) and f[d] > k1
     if claim is None:
-        return f is not None and f[d] > k1 and verify_labeling(ix, f, s, k0, k1, avoid, tau)
+        return f is not None and verify_labeling(ix, f, s, k0, k1, avoid, tau) and f[d] > k1
     if J is None or f is None:
         return False
     return (verify_journey(ix, J, s, d, k0, claim, avoid, tau=tau) and arrival(J, k0, tau) == claim
-            and f[d] >= claim and verify_labeling(ix, f, s, k0, claim - 1, avoid, tau))
+            and verify_labeling(ix, f, s, k0, max(k0, claim - 1), avoid, tau) and f[d] >= claim)
 
 
 def check_via_answer(ix, task, s, d, g, k0, k1, claim, J, f1, f2, avoid=frozenset(), tau=0):
     """Answer-level checker for VIA(g). f1: labeling from (s, k0); f2: labeling from (g, f1[g]).
     A labeling only certifies a LOWER bound; an earliest answer also needs a journey that
     ATTAINS the claimed value (arrival(J) == claim) and passes g."""
+    if task not in ("EXISTS", "EARLIEST"):
+        return False
+    if task == "EXISTS" and not isinstance(claim, (bool, np.bool_)):
+        return False
+    if task == "EARLIEST" and claim is not None and not (_is_int(claim) and k0 <= claim <= k1):
+        return False
+    if not _valid_node(ix, g):
+        return False
     if f1 is None or not verify_labeling(ix, f1, s, k0, k1, avoid, tau):
         return False
     kg = f1[g]                                   # certified lower bound on reaching g
@@ -237,31 +323,42 @@ def check_via_answer(ix, task, s, d, g, k0, k1, claim, J, f1, f2, avoid=frozense
     if (task == "EXISTS" and not claim) or (task == "EARLIEST" and claim is None):
         if kg > k1:
             return True
-        return f2 is not None and f2[d] > k1 and verify_labeling(ix, f2, g, kg, k1, avoid, tau)
+        return f2 is not None and verify_labeling(ix, f2, g, kg, k1, avoid, tau) and f2[d] > k1
     if J is None or f2 is None or kg > claim:
         return False
     return (verify_journey(ix, J, s, d, k0, claim, avoid, via=g, tau=tau)
             and arrival(J, k0, tau) == claim                          # attainment
-            and f2[d] >= claim and verify_labeling(ix, f2, g, kg, claim - 1, avoid, tau))
+            and verify_labeling(ix, f2, g, kg, max(kg, claim - 1), avoid, tau) and f2[d] >= claim)
 
 
 def check_hops_answer(ix, task, s, d, k0, k1, H, claim, J, f, avoid=frozenset()):
     """Answer-level checker for HOPS(H) (tau = 0); f is the hop-layered labeling f[n][h]."""
+    if task not in ("EXISTS", "EARLIEST"):
+        return False
+    if task == "EXISTS" and not isinstance(claim, (bool, np.bool_)):
+        return False
+    if task == "EARLIEST" and claim is not None and not (_is_int(claim) and k0 <= claim <= k1):
+        return False
     if task == "EXISTS" and claim:
         return J is not None and verify_journey(ix, J, s, d, k0, k1, avoid, H=H)
     if f is None:
         return False
     if (task == "EXISTS" and not claim) or (task == "EARLIEST" and claim is None):
-        return min(f[d]) > k1 and verify_labeling_hops(ix, f, s, k0, k1, H, avoid)
+        return verify_labeling_hops(ix, f, s, k0, k1, H, avoid) and min(f[d]) > k1
     if J is None:
         return False
     return (verify_journey(ix, J, s, d, k0, claim, avoid, H=H)
             and arrival(J, k0) == claim                               # attainment
-            and min(f[d]) >= claim and verify_labeling_hops(ix, f, s, k0, claim - 1, H, avoid))
+            and verify_labeling_hops(ix, f, s, k0, max(k0, claim - 1), H, avoid) and min(f[d]) >= claim)
 
 
 def verify_labeling_hops(ix, f, s, k0, k1, H, avoid=frozenset()):
     """Hop-layered analogue of verify_labeling on states (n, h), h <= H."""
+    if not (_valid_node(ix, s) and _valid_window(ix, k0, k1) and _is_int(H) and H >= 1
+            and _valid_avoid(ix, avoid) and isinstance(f, (list, tuple)) and len(f) == ix.N
+            and all(isinstance(r, (list, tuple)) and len(r) == H + 1
+                    and all(_valid_label(ix, x) for x in r) for r in f)):
+        return False
     if f[s][0] > k0:
         return False
     cp = ix.cp

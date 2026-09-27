@@ -23,3 +23,4 @@ for reg in ("no_isl", "isl_intra"):
                        and replay_earliest(ix, J, s, d, k0, tau=tau) == py
                        and witness_is_minimal(ix, J, s, d, k0, tau=tau) and is_node_simple(J, s))
         print(f"{reg} tau={tau}: engine==DuckDB {agree}/{n}, certified+replay+minimal {ok}/{n}")
+        assert agree == n and ok == n, "tau cross-check failed"

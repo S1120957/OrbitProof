@@ -32,7 +32,7 @@ for q in range(300):
     d = J[-1][1]
     if d==s: continue
     J2 = loop_eliminate(J, s)
-    assert verify_journey(ix,J2,s,d,k0,10**6), (J,J2)
+    assert verify_journey(ix,J2,s,d,k0,cp.T-1), (J,J2)
     assert is_node_simple(J2,s)
     assert J2[-1][2] <= J[-1][2]
     assert set(J2) <= set(J)
@@ -49,3 +49,4 @@ for q in range(100):
         g=list(f); g[d]=INF     # claim unreachable
         tot+=1; rej += (not verify_labeling(ix,g,s,k0,k1))
 print("tampered labelings rejected", rej, "of", tot)
+assert mism == 0 and rej == tot, "certificate checks failed"

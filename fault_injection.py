@@ -6,16 +6,16 @@ the real pipeline (parse/ground -> compile/execute -> answer-level checker) and 
 is classified as benign (released, equals gold), rejected (not released) or
 certified-but-wrong (released with an accepted certificate, differs from gold).
 
-Part B - single-error queries. For every instance, the correct query is evaluated with
-exactly one plausible semantic error (time order ignored, snapshot only, strict order,
-constraint dropped, no recursion, departure ignored) by the reference engine; accuracy vs
-gold is reported. Such queries execute without error, so every mistake is silent.
+Part B - semantic ablations. For every instance, the correct semantics is evaluated with
+exactly one plausible mistake (time order ignored, snapshot only, strict order, constraint
+dropped, no recursion, departure ignored) by the reference engine in Python; accuracy vs
+gold is reported. These are not executed SQL queries.
 
 Part C - expected end-to-end behaviour under an explicit, stated error model: a fraction e
 of IRs is erroneous and the error class is uniform over the applicable classes. This is a
 projection under assumptions, not a measurement of any LLM.
 
-Writes out/gen/fi_macros.tex, tab_fi_ir.tex, tab_fi_sql.tex and out/fault_injection.json.
+Writes ../paper/gen/fi_macros.tex, tab_fi_ir.tex, tab_fi_sql.tex and fault_injection.json.
 """
 from __future__ import annotations
 import json, os, collections, statistics as st
@@ -24,7 +24,7 @@ from teg import (Index, INF, earliest_arrival, earliest_arrival_hops, static_rea
 from agent import JourneyIR, IRError, parse_ir, execute, hhmm_to_slot, slot_to_hhmm
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-GEN = os.path.join(os.environ.get("ORBITPROOF_OUT", os.path.join(HERE, "out")), "gen")
+GEN = os.path.join(HERE, "..", "paper", "gen")
 T = 180
 TEMPLATES = ["T1_exists", "T2_earliest", "T3_avoid", "T4_via", "T5_hops"]
 
@@ -226,8 +226,7 @@ def main():
                B={v: {t: sum(x) / len(x) for t, x in B[v].items()} for v, _ in VARIANTS},
                B_all={v: sum(sum(x) for x in B[v].values()) / len(items) for v, _ in VARIANTS},
                mix={str(k): v for k, v in mix.items()}, tot=dict(tot), n_items=len(items))
-    os.makedirs(GEN, exist_ok=True)
-    json.dump(res, open(os.path.join(os.path.dirname(GEN), "fault_injection.json"), "w"), indent=1)
+    json.dump(res, open(os.path.join(HERE, "fault_injection.json"), "w"), indent=1)
 
     # ---- LaTeX outputs
     os.makedirs(GEN, exist_ok=True)
@@ -236,7 +235,7 @@ def main():
     for cls, disp in IR_CLASSES:
         c = A[cls]; n = sum(c.values())
         L.append(f"{disp} & {n} & {100*c['benign']/n:.0f}\\% & {100*c['rejected']/n:.0f}\\% & {100*c['cert_wrong']/n:.0f}\\% \\\\")
-    L += [r"\midrule", f"All injected errors & {ntot} & {100*tot['benign']/ntot:.0f}\\% & {100*tot['rejected']/ntot:.0f}\\% & {100*tot['cert_wrong']/ntot:.0f}\\% \\\\",
+    L += [r"\midrule", f"All injected errors & {ntot} & {100*tot['benign']/ntot:.1f}\\% & {100*tot['rejected']/ntot:.1f}\\% & {100*tot['cert_wrong']/ntot:.1f}\\% \\\\",
           r"\bottomrule", r"\end{tabular}"]
     open(os.path.join(GEN, "tab_fi_ir.tex"), "w").write("\n".join(L) + "\n")
 
@@ -251,8 +250,8 @@ def main():
 
     wrong_vars = [v for v, _ in VARIANTS if v != "correct"]
     m = {"FiN": ntot, "FiClasses": len(IR_CLASSES),
-         "FiBenign": f"{100*tot['benign']/ntot:.0f}", "FiRejected": f"{100*tot['rejected']/ntot:.0f}",
-         "FiCertWrong": f"{100*tot['cert_wrong']/ntot:.0f}",
+         "FiBenign": f"{100*tot['benign']/ntot:.1f}", "FiRejected": f"{100*tot['rejected']/ntot:.1f}",
+         "FiCertWrong": f"{100*tot['cert_wrong']/ntot:.1f}",
          "FiSqlMin": f"{100*min(res['B_all'][v] for v in wrong_vars):.0f}",
          "FiSqlMax": f"{100*max(res['B_all'][v] for v in wrong_vars):.0f}",
          "FiSqlVariants": len(wrong_vars)}

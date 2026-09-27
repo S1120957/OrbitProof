@@ -1,5 +1,5 @@
 #!/usr/bin/env bash
-# Runs the full LLM study (4 systems x 2 LLMs) and summarises it into out/.
+# Runs the full LLM study (4 systems x 2 LLMs), summarises it and rebuilds the paper.
 # Interrupted runs resume: re-run the same command.
 #
 # Environment (either model may be run alone):
@@ -35,16 +35,26 @@ for SYS in sql sql_hint view_sql ir; do
 done
 
 if [[ -n "${LIMIT:-}" ]]; then
-  python3 summarize.py "logs/*.jsonl"                 # dry run: report only, no results table
+  python3 summarize.py "logs/*.jsonl"                 # dry run: report only, paper untouched
   echo "Dry run done (LIMIT=$LIMIT). Unset LIMIT for the full run."
   exit 0
 fi
 
 if [[ "$PROVIDER_A" == mock* || "$PROVIDER_B" == mock* ]]; then
-  python3 summarize.py "logs/*.jsonl"                 # mock providers: report only, never the results table
-  echo "Mock providers: pipeline test only. the results table was NOT written."
+  python3 summarize.py "logs/*.jsonl"                 # mock providers: report only, never the paper
+  echo "Mock providers: pipeline test only. Table V was NOT written."
   exit 0
 fi
 
-python3 summarize.py "logs/*.jsonl" --write-tables
-echo "Report: out/llm_summary.md; results-table rows and macros: out/gen/. Record the model ids and prompt hash."
+python3 summarize.py "logs/*.jsonl" --write-paper
+cd ../paper
+if command -v pdflatex >/dev/null && command -v bibtex >/dev/null; then
+  pdflatex -interaction=nonstopmode main.tex >/dev/null
+  bibtex main >/dev/null
+  pdflatex -interaction=nonstopmode main.tex >/dev/null
+  pdflatex -interaction=nonstopmode main.tex >/dev/null
+  echo "Paper rebuilt: paper/main.pdf."
+else
+  echo "pdflatex/bibtex not found: Table V was written to paper/gen/tab_llm.tex; compile the paper elsewhere (e.g. Overleaf)."
+fi
+echo "Report: code/llm_summary.md. Record MODEL_A/MODEL_B and the prompt hash in the paper."

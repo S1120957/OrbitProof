@@ -1,5 +1,5 @@
-"""Runs every experiment and writes out/figs/*.pdf, out/gen/*.tex and out/results.json
-   (output directory: $ORBITPROOF_OUT, default ./out).
+"""Runs every experiment reported in the paper and writes
+   ../paper/figs/*.pdf, ../paper/gen/*.tex and results.json.
 Usage:  python3 experiments.py            (full run, ~5-10 min on one core)
         python3 experiments.py --quick    (smoke test)
 """
@@ -20,7 +20,7 @@ from teg import check_answer, arrival
 import mutation, gc, platform
 
 HERE = os.path.dirname(os.path.abspath(__file__))
-OUTDIR = os.environ.get("ORBITPROOF_OUT", os.path.join(HERE, "out"))   # output directory (not tracked)
+PAPER = os.path.join(HERE, "..", "paper")
 T_SLOTS = 180
 SEED = 7
 
@@ -173,10 +173,13 @@ def exp_horizon(quick, rng):
         sv = SQLView(cp)
         gs = gs_ids(cp)
         qs = [(*rng.sample(gs, 2), rng.randint(0, 59)) for _ in range(nq)]
-        t_ea, t_sweep, t_chk, t_sql = [], [], [], []
+        t_ea, t_sweep, t_chk, t_sql, t_full, at_k0 = [], [], [], [], [], 0
         for i, (s, d, k0) in enumerate(qs):
             t = time.perf_counter(); f, par, _ = earliest_arrival(ix, s, k0, T - 1, stop_at=d); t_ea.append(time.perf_counter() - t)
             t = time.perf_counter(); fa, _, _ = earliest_arrival(ix, s, k0, T - 1); t_sweep.append(time.perf_counter() - t)
+            t = time.perf_counter(); okf = verify_labeling(ix, fa, s, k0, T - 1); t_full.append(time.perf_counter() - t)
+            assert okf
+            at_k0 += (f[d] == k0)
             if f[d] < INF:
                 J = journey_from_parent(par, s, d)
                 t = time.perf_counter(); ok = check_answer(ix, "EARLIEST", s, d, k0, T - 1, f[d], J, f); t_chk.append(time.perf_counter() - t)
@@ -189,6 +192,7 @@ def exp_horizon(quick, rng):
                          mat_ms=1000 * sv.materialise_s, mem_mb=sv.mem_mb,
                          ea50=ms(t_ea, 50), ea95=ms(t_ea, 95), sw50=ms(t_sweep, 50), sw95=ms(t_sweep, 95),
                          chk50=ms(t_chk, 50), chk95=ms(t_chk, 95), sql50=ms(t_sql, 50), sql95=ms(t_sql, 95),
+                         full50=ms(t_full, 50), full95=ms(t_full, 95), at_k0=at_k0,
                          nq=nq, nq_sql=nq_sql))
         print("horizon", rows[-1], flush=True)
         del ix, sv, cp; gc.collect()
@@ -283,8 +287,8 @@ def thou(x):
 
 
 def write_outputs(res):
-    os.makedirs(os.path.join(OUTDIR, "figs"), exist_ok=True)
-    os.makedirs(os.path.join(OUTDIR, "gen"), exist_ok=True)
+    os.makedirs(os.path.join(PAPER, "figs"), exist_ok=True)
+    os.makedirs(os.path.join(PAPER, "gen"), exist_ok=True)
     scal, enum, ws = res["scal"], res["enum"], res["ws"]
     for reg in ws:                                   # JSON round-trip turns int keys into strings
         ws[reg]["sem"] = {int(k): v for k, v in ws[reg]["sem"].items()}
@@ -316,7 +320,7 @@ def write_outputs(res):
     ax[1].legend(loc="upper left", handlelength=1.6, borderaxespad=0.2, labelspacing=0.25)
     ax[1].set_title("(b) 66 sats, 30-slot window", fontsize=7)
     fig.tight_layout(pad=0.2, w_pad=0.6)
-    fig.savefig(os.path.join(OUTDIR, "figs", "fig_scal.pdf"))
+    fig.savefig(os.path.join(PAPER, "figs", "fig_scal.pdf"))
     plt.close(fig)
 
     # Table: time-agnostic semantics
@@ -334,7 +338,7 @@ def write_outputs(res):
     lines += [r"\bottomrule", r"\end{tabular}"]
     # fix column spec (5 cols)
     lines[0] = r"\begin{tabular}{@{}llccc@{}}"
-    open(os.path.join(OUTDIR, "gen", "tab_semantics.tex"), "w").write("\n".join(lines) + "\n")
+    open(os.path.join(PAPER, "gen", "tab_semantics.tex"), "w").write("\n".join(lines) + "\n")
 
     # Table: witnesses and certificates
     lines = [r"\begin{tabular}{@{}lccc@{}}", r"\toprule",
@@ -351,18 +355,19 @@ def write_outputs(res):
         row("Verify $J$ [$\\mu$s]", lambda R: f"{R['tj_us']:.0f}"),
         row("Verify $f$ [ms]", lambda R: f"{R['tc_ms']:.2f}"),
         r"\bottomrule", r"\end{tabular}"]
-    open(os.path.join(OUTDIR, "gen", "tab_witness.tex"), "w").write("\n".join(lines) + "\n")
+    open(os.path.join(PAPER, "gen", "tab_witness.tex"), "w").write("\n".join(lines) + "\n")
 
     # Table: horizon scaling
     hor = res["hor"]
     lines = [r"\begin{tabular}{@{}rcrrcccc@{}}", r"\toprule",
-             r"$T$ & View & Mat. & Mem. & \EA{} & Sweep & DuckDB & Check \\",
-             r"{[h]} & nodes/edges & [ms] & [MB] & [ms] & [ms] & [ms] & [ms] \\", r"\midrule"]
+             r"$T$ & View & Mat. & Mem. & \EA{} & Sweep & DuckDB & Check $f$ \\",
+             r"{[h]} & nodes/edges & [ms] & [MB] & p50/p95 & p50/p95 & p50 & p50/p95 \\", r"\midrule"]
     for r in hor:
         lines.append(f"{r['hours']} & {r['vnode']/1e3:.0f}k/{r['vedge']/1e6:.1f}M & {r['mat_ms']:.0f} & {r['mem_mb']:.0f} & "
-                     f"{r['ea50']:.2f}/{r['ea95']:.2f} & {r['sw50']:.0f}/{r['sw95']:.0f} & {r['sql50']:.0f} & {r['chk50']:.2f} \\\\")
+                     f"{r['ea50']:.2f}/{r['ea95']:.2f} & {r['sw50']:.0f}/{r['sw95']:.0f} & {r['sql50']:.0f} & "
+                     f"{r['full50']:.0f}/{r['full95']:.0f} \\\\")
     lines += [r"\bottomrule", r"\end{tabular}"]
-    open(os.path.join(OUTDIR, "gen", "tab_horizon.tex"), "w").write("\n".join(lines) + "\n")
+    open(os.path.join(PAPER, "gen", "tab_horizon.tex"), "w").write("\n".join(lines) + "\n")
 
     # Table: sensitivity to the zero-duration abstraction
     sens = res["sens"]
@@ -381,7 +386,7 @@ def write_outputs(res):
         if reg != "no_isl":
             lines.append(r"\addlinespace[1pt]")
     lines += [r"\bottomrule", r"\end{tabular}"]
-    open(os.path.join(OUTDIR, "gen", "tab_sens.tex"), "w").write("\n".join(lines) + "\n")
+    open(os.path.join(PAPER, "gen", "tab_sens.tex"), "w").write("\n".join(lines) + "\n")
 
     # Macros for inline numbers
     big = scal[-1]
@@ -441,6 +446,8 @@ def write_outputs(res):
         "HorSweepMin": f"{h0['sw50']:.0f}", "HorSweepMax": f"{h1['sw50']:.0f}",
         "HorSqlMin": f"{h0['sql50']:.0f}", "HorSqlMax": f"{h1['sql50']:.0f}",
         "HorChkMax": f"{max(r['chk50'] for r in hor):.2f}",
+        "HorFullMin": f"{h0['full50']:.0f}", "HorFullMax": f"{h1['full50']:.0f}",
+        "HorAtKzero": min(r["at_k0"] for r in hor),
         "SensChangedMax": f"{100*max(chg):.0f}",
         "SensSlotChgNoIsl": f"{100*sens['no_isl|10|0']['changed_prev']:.0f}",
         "SensTauChgNoIsl": f"{100*sens['no_isl|10|1']['changed_prev']:.1f}",
@@ -449,12 +456,14 @@ def write_outputs(res):
         "SensTauDelayIsl": f"{max(sens['isl_full|10|1']['delay50'], sens['isl_intra|10|1']['delay50']):.1f}",
         "StaticAllMin": f"{min(100*min(sens[k]['static_err'] for k in sens if k.startswith('no_isl')), 100*min(ws['no_isl']['sem'][W]['err_static'] for W in (15, 30, 60))):.0f}",
         "StaticAllMax": f"{max(100*max(sens[k]['static_err'] for k in sens if k.startswith('no_isl')), 100*max(ws['no_isl']['sem'][W]['err_static'] for W in (15, 30, 60))):.0f}",
+        "SensStaticTenMin": f"{100*min(sens[k]['static_err'] for k in ('no_isl|10|0', 'no_isl|10|1')):.0f}",
+        "SensStaticTenMax": f"{100*max(sens[k]['static_err'] for k in ('no_isl|10|0', 'no_isl|10|1')):.0f}",
         "SensStaticNoIslMin": f"{100*min(sens[k]['static_err'] for k in sens if k.startswith('no_isl')):.0f}",
         "SensStaticNoIslMax": f"{100*max(sens[k]['static_err'] for k in sens if k.startswith('no_isl')):.0f}",
         "SensNq": sens["isl_full|60|0"]["nq"],
         "ScalNq": scal[0]["nq"],
     })
-    with open(os.path.join(OUTDIR, "gen", "macros.tex"), "w") as fh:
+    with open(os.path.join(PAPER, "gen", "macros.tex"), "w") as fh:
         for k, v in m.items():
             fh.write(f"\\newcommand{{\\R{k}}}{{{v}}}\n")
 
@@ -468,8 +477,7 @@ def main():
     ap.add_argument("--only", default=",".join(PARTS),
                     help="comma-separated subset of " + ",".join(PARTS) + " (results are merged into results.json)")
     a = ap.parse_args()
-    os.makedirs(OUTDIR, exist_ok=True)
-    path = os.path.join(OUTDIR, "results.json")
+    path = os.path.join(HERE, "results.json")
     res = {}
     if os.path.exists(path) and a.only != ",".join(PARTS):
         res = json.load(open(path))

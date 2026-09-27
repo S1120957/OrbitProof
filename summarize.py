@@ -1,11 +1,11 @@
-"""Summarise LLM-study logs (harness.py --out) into a results table (LaTeX rows + macros) and an analysis report.
+"""Summarise LLM-study logs (harness.py --out) into the paper's Table V and an analysis report.
 
   python3 summarize.py logs/*.jsonl                 # report only -> llm_summary.md
-  python3 summarize.py logs/*.jsonl --write-tables   # also writes out/gen/tab_llm.tex, llm_macros.tex
-  python3 summarize.py --reset-tables                # restore the TBD results table and remove llm_macros.tex
+  python3 summarize.py logs/*.jsonl --write-paper   # also writes ../paper/gen/tab_llm.tex, llm_macros.tex
+  python3 summarize.py --reset-paper                # restore the TBD Table V and remove llm_macros.tex
 
---write-tables refuses to run if any record comes from a mock provider (mock-gold, mock-naive):
-those are pipeline tests, not LLM results, and must never be reported as results.
+--write-paper refuses to run if any record comes from a mock provider (mock-gold, mock-naive):
+those are pipeline tests, not LLM results, and must never reach the paper.
 
 Reports, per system x LLM: accuracy (Wilson 95% CI), coverage, accuracy of released answers,
 wrong-but-released, rejection/error rate, exact IR match; exact McNemar tests of OrbitProof vs each
@@ -19,7 +19,7 @@ from harness import load_env, naive_sql, run_sql, norm_answer
 SYSTEMS = [("sql", r"Text-to-SQL, base tables"), ("sql_hint", r"\quad + semantics hint"),
            ("view_sql", r"Text-to-SQL, TEG view"), ("ir", r"OrbitProof (IR + checker)")]
 HERE = os.path.dirname(os.path.abspath(__file__))
-GEN = os.path.join(os.environ.get("ORBITPROOF_OUT", os.path.join(HERE, "out")), "gen")
+GEN = os.path.join(HERE, "..", "paper", "gen")
 
 
 SYS_ROWS = [("sql", "Text-to-SQL (base)"), ("sql_hint", "\\quad + hint"),
@@ -29,7 +29,7 @@ REF_ROWS = [r"Time-agnostic ref. & -- & \RNaiveAcc\% & \RNaiveAccCov\% & \RNaive
 
 
 def llm_table(rows, labels):
-    """Results table: one row per (system, model); rows[(system, label)] -> metrics or None for TBD."""
+    """Table V: one row per (system, model); rows[(system, label)] -> metrics or None for TBD."""
     t = [r"\begin{tabular}{@{}llcccccc@{}}", r"\toprule",
          r"System & LLM & Acc. & Cov. & Acc.$|$rel. & Wrong & Err. & IR ex. \\", r"\midrule"]
     for k, (sysname, disp) in enumerate(SYS_ROWS):
@@ -52,7 +52,7 @@ TBD_TABLE = llm_table({}, ["A", "B"])
 
 
 def llm_macros(rows, models, holm):
-    """LaTeX macros for the reported metrics (per system and model, model ids, Holm maxima)."""
+    """Macros used by the results paragraph (Sec. VII-E); main.tex falls back to \\tbd for each."""
     m = {}
     for (sysname, lab), R in rows.items():
         key = {"sql": "Sql", "sql_hint": "Hint", "view_sql": "View", "ir": "Ours"}[sysname] + \
@@ -100,16 +100,16 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("logs", nargs="*")
     ap.add_argument("--bench", default=os.path.join(HERE, "bench.jsonl"))
-    ap.add_argument("--write-tables", action="store_true")
-    ap.add_argument("--reset-tables", action="store_true", help="restore the TBD results table and exit")
+    ap.add_argument("--write-paper", action="store_true")
+    ap.add_argument("--reset-paper", action="store_true", help="restore the TBD Table V and exit")
     a = ap.parse_args()
-    if a.reset_tables:
+    if a.reset_paper:
         os.makedirs(GEN, exist_ok=True)
         open(os.path.join(GEN, "tab_llm.tex"), "w").write(TBD_TABLE)
         mp = os.path.join(GEN, "llm_macros.tex")
         if os.path.exists(mp):
             os.remove(mp)
-        print("restored TBD results table (out/gen/tab_llm.tex); removed llm_macros.tex")
+        print("restored TBD Table V (paper/gen/tab_llm.tex); removed llm_macros.tex")
         return
     paths = sorted({p for g in a.logs for p in glob.glob(g) if not p.endswith(".raw.jsonl")})
     recs = [json.loads(l) for p in paths for l in open(p)]
@@ -252,17 +252,25 @@ def main():
         for lab, cnt in field_err.items():
             lines.append(f"- **{lab}**: " + ", ".join(f"{k} {v}" for k, v in cnt.most_common()))
 
-    os.makedirs(os.path.dirname(GEN), exist_ok=True)
-    open(os.path.join(os.path.dirname(GEN), "llm_summary.md"), "w").write("\n".join(lines) + "\n")
+    open(os.path.join(HERE, "llm_summary.md"), "w").write("\n".join(lines) + "\n")
     print("\n".join(lines))
 
-    if a.write_tables and mock:
+    if a.write_paper and mock:
         raise SystemExit(f"REFUSED: logs contain mock providers {mock}. Mock runs test the pipeline and are "
-                         f"not LLM results; the results table was not written. Run with real providers, or "
-                         f"'python3 summarize.py --reset-tables' to restore the TBD table.")
-    if a.write_tables and not providers:
+                         f"not LLM results; Table V was not written. Run with real providers, or "
+                         f"'python3 summarize.py --reset-paper' to restore the TBD table.")
+    if a.write_paper:                                   # completeness: fixed denominators, no duplicates
+        n_bench = sum(1 for _ in open(a.bench))
+        for (sysname, lab), g in groups.items():
+            ids = [r["id"] for r in g]
+            if len(ids) != len(set(ids)):
+                raise SystemExit(f"REFUSED: duplicate records in {sysname}/{lab}")
+            if len(ids) != n_bench:
+                raise SystemExit(f"REFUSED: {sysname}/{lab} has {len(ids)} records, benchmark has {n_bench}; "
+                                 f"incomplete runs must not become tables")
+    if a.write_paper and not providers:
         raise SystemExit("REFUSED: provider of the logs is unknown; re-score them with the current harness.")
-    if a.write_tables:
+    if a.write_paper:
         os.makedirs(GEN, exist_ok=True)
         open(os.path.join(GEN, "tab_llm.tex"), "w").write(llm_table(rows, labels))
         models = {}
@@ -272,7 +280,7 @@ def main():
         for lab, sysname, both, b, c, nn, p, ph in tests:
             holm[lab] = max(holm.get(lab, 0.0), ph)
         open(os.path.join(GEN, "llm_macros.tex"), "w").write(llm_macros(rows, models, holm))
-        print("wrote out/gen/tab_llm.tex and llm_macros.tex")
+        print("wrote paper/gen/tab_llm.tex and llm_macros.tex")
 
 
 if __name__ == "__main__":
