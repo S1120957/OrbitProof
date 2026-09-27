@@ -1,12 +1,3 @@
-"""Certifying query pipeline:  NL --(LLM)--> Journey IR --(compiler)--> TEG view query
-                               --(engine)--> answer + certificate --(verifier)--> response
-
-The LLM only produces the IR (intent + entity grounding). The composite-identifier
-encoding lives in the deterministic compiler, and every answer is released only
-with a certificate that an independent checker has accepted:
-  positive answers  -> journey witness J        (verify_journey,  O(|J|))
-  negative/optimal  -> closed labeling f        (verify_labeling, O(#contacts in window))
-"""
 from __future__ import annotations
 import json, re
 from dataclasses import dataclass, field, asdict
@@ -69,9 +60,6 @@ _HHMM = re.compile(r"^([01][0-9]|2[0-3]):[0-5][0-9]$")
 
 
 def parse_ir(text, names):
-    """Parse, validate against the IR schema, and ground an LLM-produced IR. Raises IRError.
-    Nothing is silently dropped or coerced: unknown fields, wrong types, malformed times,
-    max_hops < 1 and unsupported combinations are rejected."""
     t = text.strip()
     if t.startswith("```"):
         t = t.strip("`")
@@ -154,8 +142,6 @@ class Result:
 
 
 def execute(ix, names, ir: JourneyIR) -> Result:
-    """Run the validated IR on the engine and build a self-contained certificate; the answer is
-    certified only if verify_certificate() accepts that certificate against the base plan."""
     if list(names) != list(ix.cp.names):
         raise IRError("node names do not match the plan")
     idx = {n: i for i, n in enumerate(names)}
@@ -193,8 +179,6 @@ def execute(ix, names, ir: JourneyIR) -> Result:
 
 
 def verify_certificate(ix, names, cert):
-    """Independent check of a certificate against the base plan only: the IR is re-validated,
-    the plan digest must match, and the answer-level checkers of teg.py decide."""
     try:
         if not isinstance(cert, dict) or cert.get("version") != 1 or cert.get("plan_digest") != ix.digest:
             return False
@@ -219,7 +203,6 @@ def verify_certificate(ix, names, cert):
 
 
 def describe_ir(ir):
-    """The interpreted query in words, echoed to the operator with every answer."""
     parts = [("Is there a delivery" if ir.task == "EXISTS" else "Earliest delivery"),
              f"from {ir.src} to {ir.dst}", f"departing at or after {ir.depart_after} UTC"]
     if ir.arrive_by is not None:
@@ -234,7 +217,6 @@ def describe_ir(ir):
 
 
 def render(names, ir, res: Result):
-    """Operator-facing text generated ONLY from a certified result; otherwise a refusal."""
     if not res.certified:
         return "Answer withheld: the certificate was not accepted. Interpreted as: " + describe_ir(ir) + "."
     if ir.task == "EXISTS":
@@ -248,10 +230,7 @@ def render(names, ir, res: Result):
     return text
 
 
-# ----------------------------------------------------------------------------
-# IR -> SQL over the base tables (view defined inline). Used by the prototype and
-# to test the compiler against the engine.
-# ----------------------------------------------------------------------------
+
 def compile_sql(names, ir: JourneyIR, T, over_view=False):
     idx = {n: i for i, n in enumerate(names)}
     s, d = idx[ir.src], idx[ir.dst]
