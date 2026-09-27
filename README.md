@@ -1,6 +1,6 @@
 # OrbitProof: code for "OrbitProof: Certified LLM Querying with Time-Expanded Property Graphs"
 
-Python 3.10+, one CPU core is enough. `pip install -r requirements.txt`
+
 
 ## Files
 
@@ -19,10 +19,10 @@ Python 3.10+, one CPU core is enough. `pip install -r requirements.txt`
 | `check_small_graph_oracle.py` | Independent brute-force oracle on random small plans (answers and certificates) |
 | `check_via_hops_attack.py` | Regression test for the EARLIEST VIA/HOPS attainment gap found in the internal audit |
 | `check_engine_vs_sql.py`, `check_certificates.py`, `check_tau.py` | Correctness checks (engine vs DuckDB for tau in {0,1}, hop-bounded vs enumeration, loop elimination, replay and minimality) |
-| `bench.jsonl` | The 500-instance benchmark used in the paper (seed 11, one paraphrase per instance) |
+| `bench.jsonl` | The 500-instance benchmark used |
 | `bench_all_paraphrases.jsonl` | Same 500 instances as `bench.jsonl`, all three paraphrases each (1,500 questions; fixed in revision 2.5) |
-| `run_llm_study.sh` | One command for the whole LLM study: 4 systems x 2 LLMs, then summary and paper rebuild |
-| `summarize.py` | Logs to Table V (`paper/gen/tab_llm.tex`), with Wilson CIs, McNemar tests, per-template accuracy and error taxonomy (`llm_summary.md`) |
+| `run_llm_study.sh` | One command for the whole LLM study: 4 systems x 2 LLMs |
+| `summarize.py` | Logs, Wilson CIs, McNemar tests, per-template accuracy and error taxonomy |
 | `fault_injection.py` | Fault-injection simulation of LLM errors (Sec. VII-E, Tables V-VI): intent errors through the real pipeline, single-error queries through the reference engine, and expected behaviour under a stated error model |
-| `alt_slot_width.py` | Headline numbers under 60-s vs 10-s slots (`alt_slot_width.md`, `paper/gen/alt_macros.tex`) |
+| `alt_slot_width.py` | Headline numbers under 60-s vs 10-s slots |
 
