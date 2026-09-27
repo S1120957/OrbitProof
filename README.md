@@ -13,7 +13,7 @@ Python 3.10+, one CPU core is enough. `pip install -r requirements.txt`
 | `agent.py` | Journey IR (JSON schema), parsing and grounding, certified execution, IR-to-SQL compiler, answer renderer |
 | `make_benchmark.py` | Generates the NL question benchmark with gold IR and gold answers |
 | `harness.py` | LLM study: `sql`, `sql_hint`, `ir` systems; providers `anthropic`, `openai` (any OpenAI-compatible endpoint), `mock-gold`, `mock-naive` |
-| `experiments.py` | Runs every experiment in the paper; writes `../paper/figs/fig_scal.pdf`, `../paper/gen/*.tex` and `results.json` |
+| `experiments.py` | Runs every experiment in the paper|
 | `mutation.py` | Mutation tests: 20 classes of corrupted witnesses, labelings and answers (incl. forged, unattained lower bounds for plain/VIA/HOPS earliest answers) that the checker must reject |
 | `check_review_regressions.py` | Regression tests for every counterexample in the external pre-submission review |
 | `check_small_graph_oracle.py` | Independent brute-force oracle on random small plans (answers and certificates) |
