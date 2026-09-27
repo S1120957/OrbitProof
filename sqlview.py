@@ -1,13 +1,3 @@
-"""Relational realisation of the time-expanded property-graph view (DuckDB).
-
-Base relations : node(nid), slot(k, nk), contact(u, v, k)
-View (arity-2 node ids, arity-3 edge ids, cf. Rotschield & Peterfreund):
-  vnode(nid, k)                = node x slot                      -- Q1
-  vedge(sn, sk, tn, tk, lab)   = transmission edges (u,k)->(v,k)  -- Q2..Q5
-                                 hold edges        (n,k)->(n,nk)
-DuckDB has no SQL/PGQ GRAPH_TABLE in its core distribution, so the Kleene-star
-reachability pattern (a)-[]->*(b) is executed as the equivalent recursive CTE.
-"""
 from __future__ import annotations
 import time
 import duckdb
